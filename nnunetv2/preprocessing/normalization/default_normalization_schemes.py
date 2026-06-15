@@ -86,7 +86,6 @@ class PETCTNormalization(ImageNormalization):
         np.clip(image, lower_bound, upper_bound, out=image)
         image -= image.min()
         image /= max(image.max(), eps)
-        
         return image
 
 
