@@ -71,6 +71,21 @@ class CTNormalization(ImageNormalization):
         image -= mean_intensity
         image /= max(std_intensity, eps)
         return image
+    
+
+class MinMaxNormalization(ImageNormalization):
+    leaves_pixels_outside_mask_at_zero_if_use_mask_for_norm_is_true = False
+
+    def run(self, image: np.ndarray, seg: np.ndarray = None) -> np.ndarray:
+        assert self.intensityproperties is not None, "CTNormalization requires intensity properties"
+        eps = 1e-8 if not self.target_dtype == np.float16 else 1e-4
+        lower_bound = self.intensityproperties['lower']
+        upper_bound = self.intensityproperties['upper']
+
+        image = image.astype(self.target_dtype, copy=False)
+        np.clip(image, lower_bound, upper_bound, out=image)
+        image /= max(upper_bound - lower_bound, eps)
+        return image
 
 
 class NoNormalization(ImageNormalization):
