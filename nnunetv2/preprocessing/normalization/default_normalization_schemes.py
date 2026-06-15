@@ -73,7 +73,7 @@ class CTNormalization(ImageNormalization):
         return image
     
 
-class MinMaxNormalization(ImageNormalization):
+class PETCTNormalization(ImageNormalization):
     leaves_pixels_outside_mask_at_zero_if_use_mask_for_norm_is_true = False
 
     def run(self, image: np.ndarray, seg: np.ndarray = None) -> np.ndarray:
@@ -84,7 +84,9 @@ class MinMaxNormalization(ImageNormalization):
 
         image = image.astype(self.target_dtype, copy=False)
         np.clip(image, lower_bound, upper_bound, out=image)
-        image /= max(upper_bound - lower_bound, eps)
+
+        image -= image.min()
+        image /= max(image.max(), eps)
         return image
 
 
