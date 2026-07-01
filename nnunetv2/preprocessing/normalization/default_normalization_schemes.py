@@ -101,6 +101,7 @@ class PETCTNormalization(ImageNormalization):
             # Fallback to robust image-specific percentiles
             clip_low = float(np.percentile(image, 0.5))
             clip_high = float(np.percentile(image, 99.5))
+            warnings("Fallback to robust image-specific percentiles")
 
         # Final safeguard for degenerate bounds
         if not np.isfinite(clip_low) or not np.isfinite(clip_high) or clip_low >= clip_high:
