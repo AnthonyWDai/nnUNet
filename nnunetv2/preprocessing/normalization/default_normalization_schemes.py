@@ -1,3 +1,4 @@
+import warnings
 from abc import ABC, abstractmethod
 from typing import Type
 
@@ -83,8 +84,11 @@ class PETCTNormalization(ImageNormalization):
 
         eps = 1e-8 if self.target_dtype != np.float16 else 1e-4
 
-        lower_bound = float(self.intensityproperties["lower"])
-        upper_bound = float(self.intensityproperties["upper"])
+        lower_bound = float(self.intensityproperties.get("lower", 0))
+        upper_bound = float(self.intensityproperties.get("upper", 0))
+
+        if lower_bound == upper_bound == 0:
+            warnings.warn("None lower and upper found")
 
         # Compute robust image-specific percentiles on original values
         percentile_00_5 = float(np.percentile(image, 0.5))
