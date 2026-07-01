@@ -78,38 +78,37 @@ class PETCTNormalization(ImageNormalization):
     leaves_pixels_outside_mask_at_zero_if_use_mask_for_norm_is_true = False
 
     def run(self, image: np.ndarray, seg: np.ndarray = None) -> np.ndarray:
-        assert self.intensityproperties is not None, (
-            "PETCTNormalization requires intensity properties"
+        if self.intensityproperties is None:
+            raise ValueError("PETCTNormalization requires intensity properties")
+
+        eps = 1e-4 if self.target_dtype == np.float16 else 1e-8
+
+        lower = self.intensityproperties.get("lower")
+        upper = self.intensityproperties.get("upper")
+
+        has_valid_dataset_bounds = (
+            lower is not None
+            and upper is not None
+            and np.isfinite(lower)
+            and np.isfinite(upper)
+            and lower < upper
         )
 
-        eps = 1e-8 if self.target_dtype != np.float16 else 1e-4
+        if has_valid_dataset_bounds:
+            clip_low = float(lower)
+            clip_high = float(upper)
+        else:
+            # Fallback to robust image-specific percentiles
+            clip_low = float(np.percentile(image, 0.5))
+            clip_high = float(np.percentile(image, 99.5))
 
-        lower_bound = float(self.intensityproperties.get("lower", 0))
-        upper_bound = float(self.intensityproperties.get("upper", 0))
-
-        if lower_bound == upper_bound == 0:
-            warnings.warn("None lower and upper found")
-
-        # Compute robust image-specific percentiles on original values
-        percentile_00_5 = float(np.percentile(image, 0.5))
-        percentile_99_5 = float(np.percentile(image, 99.5))
-
-        # Integrate dataset bounds with image-specific percentiles
-        clip_low = max(lower_bound, percentile_00_5)
-        clip_high = min(upper_bound, percentile_99_5)
-
-        # Fallback in pathological cases
-        if clip_low >= clip_high:
-            clip_low = lower_bound
-            clip_high = upper_bound
-            if clip_low >= clip_high:
-                # final safeguard for degenerate bounds
-                image = image.astype(self.target_dtype, copy=False)
-                image.fill(0)
-                return image
+        # Final safeguard for degenerate bounds
+        if not np.isfinite(clip_low) or not np.isfinite(clip_high) or clip_low >= clip_high:
+            image = image.astype(self.target_dtype, copy=False)
+            image.fill(0)
+            return image
 
         image = image.astype(self.target_dtype, copy=False)
-
         np.clip(image, clip_low, clip_high, out=image)
 
         # Normalize to [0, 1]
