@@ -281,6 +281,9 @@ class nnUNetBaseDataset(ABC):
 
 class nnUNetDatasetNumpy(nnUNetBaseDataset):
     def load_case(self, identifier):
+        # .npy files are mapped read-only. nnUNetDataLoader copies the crops of them it hands to the data augmentation.
+        # Copy-on-write mappings (mmap_mode='c') would avoid some of those copies, but each write then costs a page
+        # fault per 4 kB, which is several times slower than copying the crop
         data_npy_file = join(self.source_folder, identifier + '.npy')
         if not isfile(data_npy_file):
             data = np.load(join(self.source_folder, identifier + '.npz'))['data']
@@ -296,7 +299,7 @@ class nnUNetDatasetNumpy(nnUNetBaseDataset):
         if self.folder_with_segs_from_previous_stage is not None:
             prev_seg_npy_file = join(self.folder_with_segs_from_previous_stage, identifier + '.npy')
             if isfile(prev_seg_npy_file):
-                seg_prev = np.load(prev_seg_npy_file, 'r')
+                seg_prev = np.load(prev_seg_npy_file, mmap_mode='r')
             else:
                 seg_prev = np.load(join(self.folder_with_segs_from_previous_stage, identifier + '.npz'))['seg']
         else:
@@ -374,7 +377,7 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
     def get_shape(self, identifier) -> Tuple[int, ...]:
         # blosc2.open only reads the frame header, no voxels are decompressed
         return tuple(blosc2.open(urlpath=join(self.source_folder, identifier + '.b2nd'), mode='r',
-                                 **self.mmap_kwargs).shape[1:])
+                                 dparams={'nthreads': 1}, **self.mmap_kwargs).shape[1:])
 
     @staticmethod
     def _select_filter(arr: np.ndarray, blocks, chunks, codec, clevel) -> "blosc2.Filter":
@@ -496,7 +499,10 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
     ):
         if isfile(output_filename_truncated + '.b2nd'):
             os.remove(output_filename_truncated + '.b2nd')
-        blosc2.asarray(seg, urlpath=output_filename_truncated + '.b2nd', chunks=chunks_seg, blocks=blocks_seg)
+        # Without an explicit thread count blosc2 uses the process-wide blosc2.nthreads (all cores unless
+        # set_nthreads(1) ran in this process). save_seg runs in the export pool's workers, so that oversubscribes.
+        blosc2.asarray(seg, urlpath=output_filename_truncated + '.b2nd', chunks=chunks_seg, blocks=blocks_seg,
+                       cparams={'nthreads': 1})
 
     @staticmethod
     def get_identifiers(folder: str) -> List[str]:
