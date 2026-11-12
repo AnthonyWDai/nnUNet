@@ -1,5 +1,39 @@
 # Changes that affect custom trainers
 
+## `nnUNetPredictor` no longer turns on `torch.backends.cudnn.benchmark`
+
+Creating an `nnUNetPredictor` for a CUDA device used to set `torch.backends.cudnn.benchmark = True` for the whole
+process. It now leaves the setting alone. cuDNN's algorithm search took 1.2 s and 2.2 GB of extra device memory on the
+first case of a 3d ResEnc model (192^3 patches, RTX 4090) and made the following cases about 1 % faster, so it only
+paid off over a few dozen cases. The algorithms it picks, and with them the predictions, can also differ between runs.
+To get the old behaviour, set `torch.backends.cudnn.benchmark = True` yourself. Training (`nnUNetv2_train`) still
+enables it, so the final validation is unaffected.
+
+## `nnUNetPredictor` keeps a single model's weights loaded
+
+`predict_logits_from_preprocessed_data` (and everything that predicts through it, such as `predict_from_files` and
+`predict_single_npy_array`) used to load the state dicts in `list_of_parameters` into the network for every case, even
+with a single fold. It now loads a state dict only if the network does not hold it already: it remembers which state
+dict object it loaded into which network module. Fold ensembles still load every fold for every case, and replacing
+`predictor.network` or `predictor.list_of_parameters` loads the weights again, as before. Predictions are unchanged.
+
+What is different: if your code changes the network's weights or buffers in place between predictions, the next case
+no longer resets them to `list_of_parameters`, and changes made in place to the tensors of a state dict in
+`list_of_parameters` are no longer loaded. Call `predictor.network.load_state_dict(...)` yourself in that case.
+
+## Inference preprocessing can skip the nonzero mask (`return_seg=False`)
+
+`DefaultPreprocessor.run_case` and `run_case_npy` take a new argument `return_seg` (default `True`, which changes
+nothing). nnU-Net's own inference code passes `return_seg=False` when no segmentation of a previous stage is
+preprocessed along: the segmentation that would only hold the nonzero mask is then not resampled and `None` is returned
+in its place, and the mask is not built at all unless the normalization needs it. Data and properties are identical.
+
+- Custom preprocessors whose `run_case` / `run_case_npy` do not take `return_seg` are called as before.
+- A custom preprocessor that overrides `_normalize` always gets the mask.
+- Custom normalization schemes always get the mask, as before. If your scheme's `run()` looks at `seg` only when
+  `use_mask_for_norm` is set (like all of nnU-Net's own schemes), set `uses_seg_only_if_use_mask_for_norm = True` on
+  the class to let inference skip it. Subclasses do not inherit this setting.
+
 ## Checkpoints are safetensors files now; `.pth` checkpoints are still read
 
 nnU-Net writes `checkpoint_final`, `checkpoint_best` and `checkpoint_latest` as `.safetensors` instead of `.pth`. A

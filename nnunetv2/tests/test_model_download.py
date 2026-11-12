@@ -25,6 +25,16 @@ class _BrokenOffResponse:
 
 
 class TestDownloadFile(unittest.TestCase):
+    def test_download_without_content_length(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(model_download.requests, 'get') as get:
+            response = get.return_value.__enter__.return_value
+            response.headers = {}
+            response.iter_content.return_value = [b'1234', b'5678']
+            destination = os.path.join(tmp, 'model.zip')
+            model_download.download_file('https://example.com/model.zip', destination)
+            with open(destination, 'rb') as f:
+                self.assertEqual(f.read(), b'12345678')
+
     def test_file_is_closed_when_the_download_fails(self):
         opened = []
 
