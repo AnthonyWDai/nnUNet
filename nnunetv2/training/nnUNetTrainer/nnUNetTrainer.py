@@ -9,7 +9,7 @@ import warnings
 from copy import deepcopy
 from datetime import datetime
 from time import time, sleep
-from typing import Tuple, Union, List
+from typing import Tuple, Union, List, Sequence
 from uuid import uuid4
 
 import numpy as np
@@ -1686,3 +1686,107 @@ class nnUNetTrainer(object):
         if exit_now and not self.exit_training_flag:
             self.print_to_log_file("Another rank received a termination signal.")
         return exit_now
+
+
+class nnUNetTrainerWeightedCE(nnUNetTrainer):
+    """
+    nnU-Net trainer using class-weighted CrossEntropy loss.
+
+    Expected plans entry:
+    {
+        ...
+        "loss": {
+            "ce_class_weights": [xx, xx, xx]
+        }
+    }
+
+    The weights must be ordered by segmentation-head index:
+    [background, class_1, class_2, ..., class_N].
+    """
+
+    def _get_ce_class_weights(self) -> torch.Tensor:
+        # PlansManager stores the complete plans dictionary in .plans.
+        loss_config = self.plans_manager.plans.get("loss", {})
+        weights = loss_config.get("ce_class_weights")
+
+        if weights is None:
+            raise RuntimeError(
+                "nnUNetTrainerWeightedCE requires "
+                "'loss.ce_class_weights' in the plans file."
+            )
+
+        if not isinstance(weights, Sequence) or isinstance(weights, (str, bytes)):
+            raise ValueError(
+                "'loss.ce_class_weights' must be a list of numeric values."
+            )
+
+        expected_num_classes = self.label_manager.num_segmentation_heads
+        if len(weights) != expected_num_classes:
+            raise ValueError(
+                f"Invalid number of CE weights: got {len(weights)}, but the network "
+                f"has {expected_num_classes} segmentation heads. For conventional "
+                "softmax segmentation, include the background weight as the first "
+                "element."
+            )
+
+        weights = torch.as_tensor(weights, dtype=torch.float32, device=self.device)
+
+        if not torch.all(torch.isfinite(weights)):
+            raise ValueError("All CE class weights must be finite.")
+        if torch.any(weights < 0):
+            raise ValueError("CE class weights must be non-negative.")
+        if torch.all(weights == 0):
+            raise ValueError("At least one CE class weight must be greater than zero.")
+
+        return weights
+
+    def _build_loss(self):
+        """
+        Equivalent to nnUNetTrainer._build_loss, except that conventional-label
+        training receives torch CrossEntropyLoss class weights from the plans file.
+        """
+        if self.label_manager.has_regions:
+            # Region-based training uses BCEWithLogitsLoss, not CrossEntropyLoss.
+            # ce_class_weights are deliberately not applied in this branch.
+            loss = DC_and_BCE_loss(
+                bce_kwargs={},
+                soft_dice_kwargs={
+                    "batch_dice": self.configuration_manager.batch_dice,
+                    "do_bg": True,
+                    "smooth": 1e-5,
+                    "ddp": self.is_ddp,
+                },
+                use_ignore_label=self.label_manager.has_ignore_label,
+                dice_class=self.dice_class,
+            )
+        else:
+            ce_weights = self._get_ce_class_weights()
+
+            loss = DC_and_CE_loss(
+                soft_dice_kwargs={
+                    "batch_dice": self.configuration_manager.batch_dice,
+                    "smooth": 1e-5,
+                    "do_bg": False,
+                    "ddp": self.is_ddp,
+                },
+                ce_kwargs={
+                    # Passed to RobustCrossEntropyLoss -> torch.nn.CrossEntropyLoss
+                    "weight": ce_weights,
+                },
+                weight_ce=1,
+                weight_dice=1,
+                ignore_label=self.label_manager.ignore_label,
+                dice_class=self.dice_class,
+            )
+
+        if self.enable_deep_supervision:
+            deep_supervision_scales = self._get_deep_supervision_scales()
+            weights = [1 / (2 ** i) for i in range(len(deep_supervision_scales))]
+
+            # Do not supervise the lowest-resolution output.
+            weights[-1] = 0
+            weights = [i / sum(weights) for i in weights]
+
+            loss = DeepSupervisionWrapper(loss, weights)
+
+        return loss
